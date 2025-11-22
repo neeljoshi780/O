@@ -1,0 +1,966 @@
+U2-P1 - Export full schema and Import in the scott schema of the database. And also explain each parameter with Export and Import. And Load external data into your schema with the help of all the three methods.
+
+U4-P4 Export your schema without procedure and import into scott schema and load data from sequential file and dump into scott schema. // both same type (what differents both definations after operations perform)
+
+1.Export
+// cmd use
+exp mca14/mcauser@ORCL19 file=D:\Backup\mca14_full_backup.dmp log=D:\Backup\mca14_full_backup.log owner=mca14 compress=Y consistent=Y grants=Y indexes=Y rows=Y constraints=Y buffer=4096
+// if specific table export parameter: tables=(CITY,PRODUCT)
+
+2.Import
+// cmd use
+imp mca1/mcauser@ORCL19 file=D:\Backup\mca14_full_backup.dmp log=D:\Backup\mca14_to_mca1.log fromuser=mca14 touser=mca1 ignore=Y rows=Y indexes=Y grants=Y constraints=Y commit=Y buffer=4096
+
+3.Load external data
+CREATE TABLE EMPLOYEE (
+  empno NUMBER(5),
+  ename VARCHAR2(50),
+  job   VARCHAR2(20),
+  sal   NUMBER(10,2)
+);
+
+// Required File.
+D:\Backup\employee.csv
+empno,ename,job,sal
+101,King,Manager,5000
+102,Smith,Clerk,1200
+103,Allen,Salesman,1500
+104,Jones,Analyst,3000
+105,Clark,Manager,2800
+
+// Required File.
+D:\Backup\employee.ctl
+LOAD DATA
+INFILE 'D:\Backup\employee.csv'
+INTO TABLE EMPLOYEE
+FIELDS TERMINATED BY ',' OPTIONALLY ENCLOSED BY '"'
+(
+  empno   INTEGER EXTERNAL,
+  ename   CHAR,
+  job     CHAR,
+  sal     INTEGER EXTERNAL
+)
+
+// cmd use
+sqlldr mca14/mca14@orcl19 control=D:\Backup\employee.ctl log=D:\Backup\employee_loader.log
+
+********************************************************************************************************************************************************************************************
+
+U3-P1 - Write minimum three query to find out fragmentation in database. Derive your conclusion for the result of the query.
+
+U4-P5 Find out database fragmentation, show fragmentation by more than one method and give minimum three solutions to resolve it. // Both same definations
+
+1. Free space fragmentation in tablespaces
+
+SELECT
+  tablespace_name,
+  COUNT(*) AS free_extents,
+  SUM(bytes) AS total_free_bytes,
+  MAX(bytes) AS largest_free_extent
+FROM
+  dba_free_space
+GROUP BY
+  tablespace_name;
+
+2. Table fragmentation: empty blocks from user_tables
+
+CREATE TABLE frag_test (
+    id NUMBER,
+    name VARCHAR2(100)
+)TABLESPACE STUDENT;
+
+BEGIN
+  FOR i IN 1..10000 LOOP
+    INSERT INTO frag_test VALUES (i, 'Neel Joshi Test Data ' || i);
+  END LOOP;
+  COMMIT;
+END;
+/
+
+DELETE FROM frag_test WHERE id <= 8000;
+COMMIT;
+
+SELECT
+  table_name,
+  blocks,
+  empty_blocks,
+  ROUND((empty_blocks / blocks) * 100, 2) AS pct_empty_blocks
+FROM
+  user_tables
+WHERE
+  empty_blocks > 0
+ORDER BY
+  pct_empty_blocks DESC;
+
+3. Segment fragmentation: get fragmented extents count per segment
+SELECT
+  segment_name,
+  segment_type,
+  tablespace_name,
+  COUNT(*) AS number_of_extents,
+  SUM(bytes) AS total_bytes
+FROM
+  dba_extents
+GROUP BY
+  segment_name,
+  segment_type,
+  tablespace_name
+ORDER BY
+  number_of_extents DESC;
+
+********************************************************************************************************************************************************************************************
+
+U3-P2 - Write a query to identify lock in the database and generate formatted output for better understanding.
+
+CREATE TABLE emp (
+  empno NUMBER PRIMARY KEY,
+  ename VARCHAR2(50),
+  sal NUMBER
+);
+
+INSERT INTO emp VALUES (101, 'Neel', 50000);
+INSERT INTO emp VALUES (102, 'Ravi', 40000);
+COMMIT;
+
+Session 1 (First SQL CMD)
+UPDATE emp SET sal = sal + 1000 WHERE empno = 101;
+-- NOT COMMIT (Transaction open)
+
+Session 2 (Second SQL CMD Open and Login)
+UPDATE emp SET sal = sal + 500 WHERE empno = 101;
+
+
+SET LINESIZE 500
+SET PAGESIZE 50000
+SET TRIMSPOOL ON
+SET WRAP OFF
+SET LONG 50000
+SET LONGCHUNKSIZE 50000
+
+COLUMN waiting_user FORMAT A20
+COLUMN blocking_user FORMAT A20
+COLUMN lock_type FORMAT A12
+COLUMN waiting_machine FORMAT A20
+COLUMN blocking_machine FORMAT A20
+COLUMN waiting_sql FORMAT A80
+COLUMN blocking_sql FORMAT A80
+
+SELECT
+    l1.sid AS waiting_session,
+    s1.username AS waiting_user,
+    l2.sid AS blocking_session,
+    s2.username AS blocking_user,
+    l1.type AS lock_type,
+    s1.machine AS waiting_machine,
+    s2.machine AS blocking_machine,
+    s2.status AS blocking_status,
+    qw.sql_text AS waiting_sql,
+    qb.sql_text AS blocking_sql
+FROM
+    v$lock l1
+JOIN
+    v$session s1 ON l1.sid = s1.sid
+JOIN
+    v$lock l2 ON l1.id1 = l2.id1
+              AND l1.id2 = l2.id2
+              AND l1.block = 0
+              AND l2.block = 1
+JOIN
+    v$session s2 ON l2.sid = s2.sid
+LEFT JOIN
+    v$sql qw ON s1.sql_id = qw.sql_id
+LEFT JOIN
+    v$sql qb ON s2.sql_id = qb.sql_id
+ORDER BY
+    blocking_user, waiting_user;
+
+********************************************************************************************************************************************************************************************
+
+U3-P3 Write a query to identify latch contention in the database and format output for better understanding.
+
+SELECT
+    name,
+    gets,
+    misses,
+    sleeps,
+    ROUND(((gets - misses) / NULLIF(gets, 0)) * 100, 2) AS hit_ratio_percent
+FROM
+    v$latch
+WHERE 
+    name IN ('redo allocation', 'cache buffers lru chain', 'redo copy', 'library cache load lock');
+
+********************************************************************************************************************************************************************************************
+
+U3-P4 Write query to find out hit ratio for the data buffer cache and write your conclusion.
+
+DATA BUFFER CACHE HIT RATIO
+====================================================================================
+(PER SESSION)
+		[QUERY NO-1]
+--------------------------------------------------
+SELECT 
+    ROUND(
+        ((cur.value + con.value) / NULLIF((cur.value + con.value) - phy.value, 0)) * 100, 
+        2
+    ) AS "Buffer Cache Hit Ratio (%)"
+FROM 
+    v$sysstat cur,
+    v$sysstat con,
+    v$sysstat phy
+WHERE 
+    cur.name = 'db block gets'
+    AND con.name = 'consistent gets'
+    AND phy.name = 'physical reads';
+=====================================================
+		[QUERY NO-2]
+======================================================
+SELECT 
+    ROUND(
+        (1 - (phy.value / (cur.value + con.value))) * 100, 
+        2
+    ) AS "Buffer Cache Hit Ratio (%)"
+FROM 
+    v$sysstat cur,
+    v$sysstat con,
+    v$sysstat phy
+WHERE 
+    cur.name = 'db block gets'
+    AND con.name = 'consistent gets'
+    AND phy.name = 'physical reads';
+
+--------------------------------------------------
+(per BUFFER POOL)
+---------------------------------------------
+SELECT 
+    name AS buffer_pool,
+    db_block_gets,
+    consistent_gets,
+    physical_reads,
+    ROUND(
+        ((db_block_gets + consistent_gets - physical_reads) / 
+         DECODE((db_block_gets + consistent_gets),0,1,(db_block_gets + consistent_gets))) * 100,
+        2
+    ) AS "Buffer Cache Hit Ratio (%)"
+FROM v$buffer_pool_statistics
+ORDER BY name;
+
+===================================================================================
+(SYSTEM HIT RATIO)
+====================================================================================
+SELECT (1 - (phy.value / (cur.value + con.value))) * 100 AS "Buffer Cache Hit Ratio"
+FROM v$sysstat cur, v$sysstat con, v$sysstat phy
+WHERE cur.name = 'db block gets'
+AND con.name = 'consistent gets'
+AND phy.name = 'physical reads';
+====================================================================================
+(HOW IT WILL WORK)
+====================================================================================
+When a SQL query needs a data block:
+	Oracle first checks buffer cache (in memory).
+	If found → cache hit
+	If not found → disk read (physical read).
+-===================================================================================
+DB Block Gets = 1000
+Consistent Gets = 500
+Physical Reads = 50
+
+Buffer Cache Hit Ratio (%) = (1 - (Physical Reads) / (DB Block Gets + Consistent Gets)) * 100
+
+Buffer Cache Hit Ratio (%) = (1 - (50 / (1000 + 500))) * 100 = 96.7%
+
+========================================================================================
+CONCLUSION
+----------------------------------------------------
+Hit Ratio 90–99% → Most of the time, Oracle finds the data it needs in memory (buffer cache). This is good and fast.
+
+Hit Ratio below 90% → Oracle has to read from the disk more often, which is slower. You might need to:
+
+	-Give more memory to the buffer cache (DB_CACHE_SIZE).
+
+	-Optimize your queries or indexes so Oracle doesn’t read unnecessary data.
+======================================================================================================
+
+higher hit ratio = faster performance
+lower hit ratio = slower performance.
+=========================================================================================
+[Solution]
+Give more memory to the buffer cache (DB_CACHE_SIZE) so frequently used data stays in memory. 
+Optimize queries and use indexes to reduce unnecessary disk reads. 
+Focus on hot tables to keep their blocks in memory for faster performance
+
+********************************************************************************************************************************************************************************************
+
+U3-P5 Write different queries to find out hit ratio for the shared pool area and redo log each.
+
+					SHARED POOL HIT RATIO
+==========================================================================================================================
+SELECT 
+    ROUND((SUM(gethits) / SUM(gets)) * 100, 2) AS "Shared Pool Get Hit Ratio (%)",
+    ROUND((SUM(pinhits) / SUM(pins)) * 100, 2) AS "Shared Pool Pin Hit Ratio (%)"
+FROM v$librarycache;
+
+-------------------------------------------------------------------------------
+SELECT 
+    ROUND((SUM(requests) - SUM(request_misses)) / SUM(requests) * 100, 2) 
+        AS "Shared Pool Hit Ratio (%)"
+FROM v$shared_pool_reserved;
+
+
+=============================================================================================================================
+                                         REDO LOG HIT RATIO
+===========================================================================================================================
+SELECT 
+    ROUND(
+        (SUM(value) - SUM(CASE WHEN name = 'redo buffer allocation retries' THEN value END)) 
+        / SUM(value) * 100,
+        2
+    ) AS "Redo Log Hit Ratio (%)"
+FROM v$sysstat
+WHERE name IN ('redo entries', 'redo buffer allocation retries');
+
+------------------------------------------------------------------------------------
+SELECT 
+    ROUND(
+        (COUNT(*) - SUM(CASE WHEN status='ACTIVE' THEN 1 ELSE 0 END)) 
+        / COUNT(*) * 100,
+        2
+    ) AS "Approx Redo Log Hit Ratio (%)"
+FROM v$log;
+
+-----------------------------------------------------------------------------------
+[Shows how much redo is being written and if sessions are waiting for log space.]
+
+SELECT name, value,con_id,class
+FROM v$sysstat
+WHERE name IN ('redo writes', 'redo log space requests', 'redo log space waits');
+
+=====================================================================================================================
+					[HOW SHARED POOL WILL WORK]
+------------------------------------------------------------------------------------------------------------------
+It checks the Library Cache (part of Shared Pool) to see if the statement or object is already in memory.
+	If found → Cache Hit (no parsing needed)
+	If not found → Miss → Oracle has to parse or load the object again (slower).
+================================================================================
+[EXAMPLE]
+
+Gets = 2000
+Get Misses = 100
+Pins = 500
+Pin Misses = 25
+
+Get Hit Ratio (%) = (Gets - Get Misses) / Gets * 100
+Get Hit Ratio (%) = (2000 - 100) / 2000 * 100 = 95%
+
+Pin Hit Ratio (%) = (Pins - Pin Misses) / Pins * 100
+Pin Hit Ratio (%) = (500 - 25) / 500 * 100 = 95%
+==========================================================================
+[CONCLUSION]
+
+Hit Ratio 90–99% → Most of the time, Oracle finds objects in memory 
+	→ Fast execution.
+Hit Ratio below 90% → Oracle often reparses or reloads objects 
+	→ Slower execution.
+==========================================================================
+[HOW TO RESOLVE THIS PROBLEM]
+
+Increase SHARED_POOL_SIZE.
+Reduce unnecessary PL/SQL or SQL compilations.
+
+
+=====================================================================================================================
+					HOW REDO LOG  WILL WORK
+=====================================================================================================================
+When Oracle makes changes (INSERT, UPDATE, DELETE), it writes redo entries to the redo log buffer in memory.
+If the buffer is reused efficiently → Hit (less waiting).
+If the buffer cannot keep up → Miss / Wastage (needs to write to disk immediately, slower).
+================================================================================
+[EXAMPLE]
+Redo Entries = 10000
+Redo Wastage = 200
+
+Redo Log Hit Ratio (%) = (1 - Redo Wastage / Redo Entries) * 100
+Redo Log Hit Ratio (%) = (1 - 200 / 10000) * 100 = 98%
+=============================================================================
+[CONCLUSION]
+Hit Ratio 90–99% → Redo log buffer is sufficient
+	 → Good performance.
+Hit Ratio below 90% → Frequent waits for redo writes 
+	→ Slower transaction processing.
+==============================================================================
+[HOW TO RESOLVE]
+
+Increase LOG_BUFFER size in Oracle:
+	ALTER SYSTEM SET log_buffer = <new_size> SCOPE=BOTH;
+Avoid large single transactions that generate excessive redo at once.
+Tune application to commit efficiently, not too frequently, not too rarely.
+
+********************************************************************************************************************************************************************************************
+
+U3-P6 Write a query to find out what will be the execution plan of the query. Derive all the steps.
+
+6. Find Query Execution Pla==============
+===================================================
+SQL> select * from Table(DBMS_Xplan.Display);
+===============================================================
+CREATE TABLE author (
+    BOOK_ID NUMBER,
+    AUTHOR_ID NUMBER,
+    TITLE VARCHAR2(100),
+    PRICE NUMBER(10,2)
+) storage (initial 5k next 5k minextents 1 maxextents 5);
+===================================================
+Query:
+-------------------------------------------------
+EXPLAIN PLAN
+  SET STATEMENT_ID = '101' FOR
+  SELECT * FROM author;
+==============================================
+EXPLAIN PLAN
+  SET STATEMENT_ID = '102' FOR
+  SELECT * FROM publisher;
+======================================================
+EXPLAIN PLAN
+  SET STATEMENT_ID = '103' FOR
+  SELECT * FROM emp_frag;
+====================================================================
+SET LINESIZE 150
+SET PAGESIZE 200
+
+COLUMN id FORMAT 999 HEADING "Id"
+COLUMN operation FORMAT A25 HEADING "Operation"
+COLUMN name FORMAT A15 HEADING "Name"
+COLUMN rows FORMAT 9999 HEADING "Rows"
+COLUMN bytes FORMAT 9999 HEADING "Bytes"
+COLUMN "Cost (%CPU)" FORMAT A10
+COLUMN time FORMAT A10 HEADING "Time"
+
+SELECT
+    id,
+    LPAD(' ', 2 * depth) || operation AS operation,
+    NVL(object_name, ' ') AS name,
+    NVL(cardinality, 0) AS "Rows",
+    NVL(bytes, 0) AS bytes,
+    cost || ' (0)' AS "Cost %CPU",
+    '00:00:01' AS "Time"
+FROM
+    plan_table;
+====================================================================
+WHERE
+    statement_id = '101'
+ORDER BY
+    id;
+-==-=-=-=-=-=-=-=-=-=-=-=-=-=-=-==-=-=-=-=-=-=--=--=-=-=-=-=--=-=-=-
+
+SELECT * 
+FROM table(DBMS_XPLAN.DISPLAY(NULL, '101'));
+
+SELECT *
+FROM table(DBMS_XPLAN.DISPLAY(NULL, '102'));
+==============================================================================
+explain plan for select * from author where authorid=1;
+
+COLUMN object_name FORMAT A25;
+COLUMN object_owner FORMAT A15;
+select object_name,object_owner,operation,id,depth from plan_table;
+------------------------------------------------
+
+explain plan for 
+select * from author where authorid=1;
+SELECT * FROM TABLE(DBMS_XPLAN.DISPLAY);
+------------------------------------------------
+explain plan for select * from author where authorid=1;
+select plan_table_output from table(dbms_xplan.display_cursor(null,null,'basic'));
+
+********************************************************************************************************************************************************************************************
+
+U3-P7 Write a query to find out sort area contention in data base and give right solution as a dba.
+
+				SORT AREA CONTATTION
+=============================================================================================
+SELECT a.sid, 
+       b.name, 
+       a.value 
+FROM v$sesstat a, v$statname b 
+WHERE a.statistic# = b.statistic# 
+AND b.name = 'sorts (memory)';
+======================================================================
+SELECT name, value
+FROM v$sysstat
+WHERE name IN ('sorts (memory)', 'sorts (disk)');
+============================================================
+ SELECT
+       (SELECT VALUE FROM v$sysstat WHERE name = 'sorts (memory)') AS memory_sorts,
+       (SELECT VALUE FROM v$sysstat WHERE name = 'sorts (disk)') AS disk_sorts
+    FROM dual;
+============================================================================
+			SORT AREA HIT RATIO
+============================================================================
+SELECT
+        MEM.VALUE AS sorts_in_memory,
+       DISK.VALUE AS sorts_on_disk,
+       ROUND(
+           (MEM.VALUE / (MEM.VALUE + DISK.VALUE)) * 100,
+           2
+       ) AS sort_hit_ratio_percent
+   FROM
+       (SELECT VALUE FROM v$sysstat WHERE name = 'sorts (memory)') MEM,
+      (SELECT VALUE FROM v$sysstat WHERE name = 'sorts (disk)') DISK;
+============================================================
+ SELECT
+       ROUND(
+           (MEM_SORTS.VALUE /
+           (MEM_SORTS.VALUE + DISK_SORTS.VALUE)) * 100,
+           2
+      ) AS sort_hit_ratio_percent
+    FROM
+        (SELECT VALUE FROM v$sysstat WHERE name = 'sorts (memory)') MEM_SORTS,
+        (SELECT VALUE FROM v$sysstat WHERE name = 'sorts (disk)') DISK_SORTS;
+================================================================================
+ALTER SYSTEM SET SORT_AREA_SIZE = 10M;
+
+********************************************************************************************************************************************************************************************
+U3-P8 - Write a procedure to update, delete and insert new element in varray.
+
+CREATE OR REPLACE TYPE num_array AS VARRAY(10) OF NUMBER;
+/
+
+
+CREATE OR REPLACE PROCEDURE manage_varray IS
+    v_arr num_array := num_array();
+BEGIN
+    v_arr.EXTEND(3);
+    v_arr(1) := 10;
+    v_arr(2) := 20;
+    v_arr(3) := 30;
+
+    DBMS_OUTPUT.PUT_LINE('After Insert: ' || v_arr(1) || ',' || v_arr(2) || ',' || v_arr(3));
+
+    v_arr(2) := 99;
+    DBMS_OUTPUT.PUT_LINE('After Update: ' || v_arr(1) || ',' || v_arr(2) || ',' || v_arr(3));
+
+    v_arr(3) := NULL;
+    DBMS_OUTPUT.PUT_LINE('After Simulated Delete: ' || v_arr(1) || ',' || v_arr(2) || ',' || v_arr(3));
+END;
+/
+
+
+SET SERVEROUTPUT ON;
+
+BEGIN
+   manage_varray;
+END;
+/
+
+********************************************************************************************************************************************************************************************
+
+U3-P9 - Write a procedure to update, delete and insert new element in nested table.
+
+----------------------NOTE: IF ALL READY EXIST TYPE OR TABLE-----------------------
+drop table employees_nt;
+drop type email_nt;
+
+-- Nested Table type for emails
+CREATE OR REPLACE TYPE email_nt IS TABLE OF VARCHAR2(100);
+/
+
+
+CREATE TABLE employees_nt (
+    emp_id   NUMBER PRIMARY KEY,
+    emp_name VARCHAR2(50),
+    emails   email_nt
+) NESTED TABLE emails STORE AS emails_tab;
+
+
+INSERT INTO employees_nt VALUES (1, 'Neel Joshi', email_nt('neeljoshi780@gmail.com','neel@company.com'));
+COMMIT;
+
+CREATE OR REPLACE PROCEDURE manage_employee_emails_nt (
+    p_emp_id IN NUMBER,
+    p_action IN VARCHAR2, 
+    p_index IN NUMBER DEFAULT NULL,
+    p_value IN VARCHAR2 DEFAULT NULL
+) IS
+ 
+BEGIN
+  
+    IF UPPER(p_action) = 'INSERT' THEN
+        
+        INSERT INTO TABLE (
+            SELECT emails
+            FROM employees_nt
+            WHERE emp_id = p_emp_id
+        ) VALUES (p_value);
+       
+
+    ELSIF UPPER(p_action) = 'UPDATE' THEN
+      
+        UPDATE TABLE (
+        SELECT emails
+        FROM employees_nt
+        WHERE emp_id = p_emp_id
+    ) e
+    SET VALUE(e) = p_value
+    WHERE ROWNUM = p_index;
+
+
+
+    ELSIF UPPER(p_action) = 'DELETE' THEN
+       
+        DELETE FROM TABLE (
+        SELECT emails
+        FROM employees_nt
+        WHERE emp_id = p_emp_id
+    ) e
+    WHERE ROWNUM = p_index;
+
+    END IF;
+
+    COMMIT;
+END;
+/
+
+BEGIN
+    manage_employee_emails_nt(1, 'INSERT',1,  'neel@yahoo.com');
+END;
+/
+
+BEGIN
+    manage_employee_emails_nt(1, 'UPDATE', 1, 'neeljoshi780@company.com');
+END;
+/
+
+BEGIN
+    manage_employee_emails_nt(1, 'DELETE', 1);
+END;
+/
+
+********************************************************************************************************************************************************************************************
+
+U4-P1 Find out fragmentation using DBMS_SPACE package and show out put.
+
+CREATE TABLE author (
+    BOOK_ID NUMBER,
+    AUTHOR_ID NUMBER,
+    TITLE VARCHAR2(100),
+    PRICE NUMBER(10,2)
+) storage (initial 5k next 5k minextents 1 maxextents 5);
+========================================================================================
+insert into author values(1,101,'abc',100);
+========================================================================================
+SET SERVEROUTPUT ON
+DECLARE
+    l_total_blocks            NUMBER;
+    l_total_bytes             NUMBER;
+    l_unused_blocks           NUMBER;
+    l_unused_bytes            NUMBER;
+    l_last_used_extent_file_id NUMBER;
+    l_last_used_extent_block_id NUMBER;
+    l_last_used_block          NUMBER;
+BEGIN
+    DBMS_SPACE.UNUSED_SPACE (
+        segment_owner             => 'MCA36',
+        segment_name              => 'AUTHOR',
+        segment_type              => 'TABLE',
+        total_blocks              => l_total_blocks,
+        total_bytes               => l_total_bytes,
+        unused_blocks             => l_unused_blocks,
+        unused_bytes              => l_unused_bytes,
+        last_used_extent_file_id  => l_last_used_extent_file_id,
+        last_used_extent_block_id => l_last_used_extent_block_id,
+        last_used_block           => l_last_used_block
+    );
+
+    DBMS_OUTPUT.PUT_LINE('Total Blocks        : ' || l_total_blocks);
+    DBMS_OUTPUT.PUT_LINE('Total Bytes         : ' || l_total_bytes);
+    DBMS_OUTPUT.PUT_LINE('Unused Blocks       : ' || l_unused_blocks);
+    DBMS_OUTPUT.PUT_LINE('Unused Bytes        : ' || l_unused_bytes);
+    DBMS_OUTPUT.PUT_LINE('Last Used File ID   : ' || l_last_used_extent_file_id);
+    DBMS_OUTPUT.PUT_LINE('Last Used Block ID  : ' || l_last_used_extent_block_id);
+    DBMS_OUTPUT.PUT_LINE('Last Used Block     : ' || l_last_used_block);
+END;
+/
+
+********************************************************************************************************************************************************************************************
+
+U4-P3 With the use of DBMS_DDL package analyz table , index and cluster in your schema.
+
+------------------------------------------------------------
+-- 1. CREATE A CLUSTER
+------------------------------------------------------------
+CREATE CLUSTER emp_dept_cluster (
+    deptno NUMBER(5)
+)
+SIZE 1024;
+
+------------------------------------------------------------
+-- 2. CREATE AN INDEX ON THE CLUSTER
+------------------------------------------------------------
+CREATE INDEX emp_dept_cluster_idx
+ON CLUSTER emp_dept_cluster;
+
+------------------------------------------------------------
+-- 3. CREATE TABLES INSIDE THE CLUSTER
+------------------------------------------------------------
+CREATE TABLE department (
+    deptno NUMBER(5) PRIMARY KEY,
+    dname  VARCHAR2(50)
+)
+CLUSTER emp_dept_cluster (deptno);
+
+CREATE TABLE employee (
+    empno   NUMBER(5) PRIMARY KEY,
+    ename   VARCHAR2(50),
+    deptno  NUMBER(5),
+    salary  NUMBER(10,2)
+)
+CLUSTER emp_dept_cluster (deptno);
+
+------------------------------------------------------------
+-- 4. CREATE A NORMAL (NON-CLUSTERED) TABLE
+------------------------------------------------------------
+CREATE TABLE author1 (
+    book_id   NUMBER,
+    author_id NUMBER,
+    title     VARCHAR2(100),
+    price     NUMBER(10,2)
+)
+STORAGE (
+    INITIAL     5K
+    NEXT        5K
+    MINEXTENTS  1
+    MAXEXTENTS  5
+);
+
+------------------------------------------------------------
+-- 5. CREATE INDEX ON NORMAL TABLE
+------------------------------------------------------------
+CREATE INDEX author_idx
+ON author1 (author_id);
+
+------------------------------------------------------------
+-- 6. ANALYZE ALL OBJECTS USING DBMS_DDL (NO METHOD PARAMETER)
+------------------------------------------------------------
+BEGIN
+  -- Analyze cluster
+  DBMS_DDL.ANALYZE_OBJECT(
+    type   => 'CLUSTER',
+    schema => 'MCA36',
+    name   => 'EMP_DEPT_CLUSTER',
+    method => 'COMPUTE'
+  );
+
+  -- Analyze tables inside cluster
+  DBMS_DDL.ANALYZE_OBJECT('TABLE', 'MCA36', 'DEPARTMENT', 'COMPUTE');
+  DBMS_DDL.ANALYZE_OBJECT('TABLE', 'MCA36', 'EMPLOYEE', 'COMPUTE');
+
+  -- Analyze cluster index
+  DBMS_DDL.ANALYZE_OBJECT('INDEX', 'MCA36', 'EMP_DEPT_CLUSTER_IDX', 'COMPUTE');
+
+  -- Analyze normal table
+  DBMS_DDL.ANALYZE_OBJECT('TABLE', 'MCA36', 'AUTHOR1', 'COMPUTE');
+
+  -- Analyze normal index
+  DBMS_DDL.ANALYZE_OBJECT('INDEX', 'MCA36', 'AUTHOR_IDX', 'COMPUTE');
+END;
+/
+
+==============================================================================
+CHECK THE TABLE IS ANALYZED OR NOT
+-----------------------------------------------------------------------------
+COLUMN table_name   FORMAT A20
+SELECT table_name, num_rows, blocks, last_analyzed
+FROM user_tables
+WHERE table_name IN ('DEPARTMENT','EMPLOYEE','AUTHOR1');
+-------------------------------------------------------------------------------------
+CHECK THE INDEWX IS ANALYZE OR NOT
+----------------------------------------------------------------------------------------
+SELECT index_name, table_name, distinct_keys, leaf_blocks, last_analyzed
+FROM user_indexes
+WHERE index_name IN ('EMP_DEPT_CLUSTER_IDX','AUTHOR_IDX');
+---------------------------------------------------------------------------------
+CHECK THE CLUSTER IS ANALYZE OR NOT
+----------------------------------------------------------------------------------------
+SELECT table_name, last_analyzed
+FROM user_tab_statistics
+WHERE table_name IN ('DEPARTMENT', 'EMPLOYEE');
+
+********************************************************************************************************************************************************************************************
+
+U4-P6 Implement dynamic sql using DBMS_SQL package.
+
+CREATE TABLE emp (
+    empno NUMBER,
+    ename VARCHAR2(50),
+    deptno NUMBER
+)
+storage (initial 1k next 10k minextents 1 maxextents 5)
+;
+
+INSERT INTO emp VALUES (101, 'ANKESH', 10);
+INSERT INTO emp VALUES (102, 'JAYESH', 20);
+INSERT INTO emp VALUES (103, 'PARTH', 10);
+COMMIT;
+===============================================================================
+SET SERVEROUTPUT ON;
+
+DECLARE
+    v_cursor_id   NUMBER;         -- Cursor handle
+    v_query       VARCHAR2(200);  -- Dynamic SQL query
+    v_empno       NUMBER;         -- Output variable
+    v_ename       VARCHAR2(50);   -- Output variable
+    v_status      NUMBER;         -- Execution status
+BEGIN
+    -- Step 1: Build SQL query dynamically
+    v_query := 'SELECT empno, ename FROM emp WHERE deptno = :deptno';
+
+    -- Step 2: Open a cursor
+    v_cursor_id := DBMS_SQL.OPEN_CURSOR;
+
+    -- Step 3: Parse the SQL statement
+    DBMS_SQL.PARSE(v_cursor_id, v_query, DBMS_SQL.NATIVE);
+
+    -- Step 4: Bind the variable
+    DBMS_SQL.BIND_VARIABLE(v_cursor_id, ':deptno', 10);
+
+    -- Step 5: Define columns to fetch
+    DBMS_SQL.DEFINE_COLUMN(v_cursor_id, 1, v_empno);
+    DBMS_SQL.DEFINE_COLUMN(v_cursor_id, 2, v_ename, 50);
+
+    -- Step 6: Execute the statement
+    v_status := DBMS_SQL.EXECUTE(v_cursor_id);
+
+    -- Step 7: Fetch and display rows
+    LOOP
+        EXIT WHEN DBMS_SQL.FETCH_ROWS(v_cursor_id) = 0;
+        DBMS_SQL.COLUMN_VALUE(v_cursor_id, 1, v_empno);
+        DBMS_SQL.COLUMN_VALUE(v_cursor_id, 2, v_ename);
+        DBMS_OUTPUT.PUT_LINE('Emp No: ' || v_empno || ' | Name: ' || v_ename);
+    END LOOP;
+
+    -- Step 8: Close cursor
+    DBMS_SQL.CLOSE_CURSOR(v_cursor_id);
+
+
+END;
+/
+
+********************************************************************************************************************************************************************************************
+
+U4-P7 Put your job for insert new five records into student database using DBMS_JOB package.
+
+CREATE TABLE student (
+    student_id   NUMBER PRIMARY KEY,
+    name         VARCHAR2(50),
+    marks        NUMBER
+)storage (initial 2k next 5k minextents 1 maxextents 5);
+--------------------------------------------------------------------------------------------------------
+CREATE SEQUENCE student_seq START WITH 1 INCREMENT BY 1;
+------------------------------------------------------------------------------------------------------
+CREATE OR REPLACE PROCEDURE insert_students_job AS
+BEGIN
+    INSERT INTO student (student_id, name, marks) VALUES (student_seq.NEXTVAL, 'Ankesh', 95);
+    INSERT INTO student (student_id, name, marks) VALUES (student_seq.NEXTVAL, 'Jayesh', 90);
+    INSERT INTO student (student_id, name, marks) VALUES (student_seq.NEXTVAL, 'Parth', 78);
+    INSERT INTO student (student_id, name, marks) VALUES (student_seq.NEXTVAL, 'Ram', 92);
+    INSERT INTO student (student_id, name, marks) VALUES (student_seq.NEXTVAL, 'Krishn', 88);
+    
+    COMMIT;
+END;
+/
+--------------------------------[FOR ONLY ONE TIME]--------------------------------------------------------
+DECLARE
+    job_no NUMBER;
+BEGIN
+    DBMS_JOB.SUBMIT(
+        job       => job_no,
+        what      => 'BEGIN insert_students_job; END;',
+        next_date => SYSDATE,
+        interval  => 'NULL'  -- run only once
+    );
+    COMMIT;
+    
+    DBMS_OUTPUT.PUT_LINE('Job created with JOB ID: ' || job_no);
+END;
+/
+============================[for every day]=========================================
+DECLARE
+    job_no NUMBER;
+BEGIN
+    DBMS_JOB.SUBMIT(
+        job       => job_no,
+        what      => 'BEGIN insert_students_job; END;',
+        next_date => SYSDATE,
+        interval  => 'SYSDATE + 1'  -- run every day
+    );
+    COMMIT;
+    DBMS_OUTPUT.PUT_LINE('Job created with JOB ID: ' || job_no);
+END;
+/
+-----------------------------------------------------------------
+select * from student;
+
+********************************************************************************************************************************************************************************************
+U4-P2 With the use of DBMS_DDL package recompile your all modified package or procedure in you schema.
+U4-P8 With the use of DBMS_DDL package recompile your all modified package or procedure in you schema.// Both same.
+
+===================[CREATE PACKAGE]==============================
+CREATE OR REPLACE PACKAGE emp_pkg IS
+    PROCEDURE show_emp(p_empno NUMBER);
+END emp_pkg;
+/
+-----------------------------------------------------------------------
+CREATE OR REPLACE PACKAGE BODY emp_pkg IS
+    PROCEDURE show_emp(p_empno NUMBER) IS
+    BEGIN
+        DBMS_OUTPUT.PUT_LINE('Employee no: ' || p_empno);
+    END;
+END emp_pkg;
+/
+======================[CHECK THE PACKAGE IS CREATED]================================
+SELECT object_name, object_type, status
+FROM user_objects
+WHERE object_name = 'EMP_PKG';
+==============================[recompile package]======================================================
+
+BEGIN
+    DBMS_DDL.ALTER_COMPILE('PACKAGE BODY', 'MCA36', 'EMP_PKG');
+END;
+/
+=========================================================================================================================
+=====================[create PROCEDURE]=======================================
+CREATE OR REPLACE PROCEDURE emp_proc AS
+BEGIN
+    DBMS_OUTPUT.PUT_LINE('Employee procedure executed successfully!');
+END;
+/
+------------------[EXECUTE PROCEDURE]--------------------
+set serveroutput on;
+EXEC emp_proc;
+---------------------------------------
+SELECT object_name, object_type, status
+FROM user_objects
+WHERE object_name = 'EMP_PROC';
+---------------------------[RECOMPILE PROCEDURE]-------------------
+BEGIN
+    DBMS_DDL.ALTER_COMPILE('PROCEDURE', 'MCA36', 'EMP_PROC');
+END;
+/
+
+********************************************************************************************************************************************************************************************
+CREATE TABLE author (
+    BOOK_ID     NUMBER,
+    AUTHOR_ID   NUMBER,
+    TITLE       VARCHAR2(100),
+    PRICE       NUMBER(10,2)
+)
+TABLESPACE stud
+STORAGE (
+    INITIAL     5K
+    NEXT        5K
+    MINEXTENTS  1
+    MAXEXTENTS  5
+);
+=====================================================================
+insert into author values(1,102,'aaaa',1000);
+===========================================================
+--column book_id format a20;
